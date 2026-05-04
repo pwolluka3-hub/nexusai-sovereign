@@ -63,8 +63,6 @@ export async function runSandboxedCode<T = any>(
       workerData: {
         code,
         input,
-        // We pass a serialized version of the context or handle it via message passing
-        // For simplicity in this POC, we pass the necessary bridge methods
         context: {
           kv: {
             get: (k) => parentPort.postMessage({ type: 'kv_get', key: k }),
@@ -101,9 +99,8 @@ export async function runSandboxedCode<T = any>(
           duration: Date.now() - startTime,
         });
       } else if (msg.type === 'log') {
-        console.log(`[Sandbox Log]: ${msg.content}`);
+        console.log("[Sandbox Log]: " + msg.content);
       } else if (msg.type === 'kv_get') {
-        // Handle the bridge call
         const val = await createManagerContext().kv.get(msg.key);
         worker.postMessage({ type: 'kv_get_res', value: val });
       } else if (msg.type === 'kv_set') {
@@ -125,7 +122,7 @@ export async function runSandboxedCode<T = any>(
         clearTimeout(timeout);
         resolve({
           success: false,
-          error: \`Worker exited with code \${code}\`,
+          error: "Worker exited with non-zero code",
           duration: Date.now() - startTime,
         });
       }
