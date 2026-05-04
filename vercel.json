@@ -1,0 +1,19 @@
+{
+  "framework": "nextjs",
+  "buildCommand": "pnpm run build",
+  "devCommand": "pnpm run dev",
+  "installCommand": "pnpm install --frozen-lockfile",
+  "regions": ["iad1"],
+  "git": {
+    "deploymentEnabled": {
+      "main": true,
+      "production": true
+    }
+  },
+  "crons": [
+    {
+      "path": "/api/worker/process",
+      "schedule": "0 * * * *"
+    }
+  ]
+}
