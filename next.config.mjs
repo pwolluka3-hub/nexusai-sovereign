@@ -16,7 +16,7 @@ const nextConfig = {
     tsconfigPath: './tsconfig.json',
   },
   images: {
-    // SECURITY FIX: Restrict to trusted domains only instead of allowing any HTTPS domain
+    remotePatterns: [
       {
         protocol: 'https',
         hostname: 'extractedproject-theta.vercel.app',
