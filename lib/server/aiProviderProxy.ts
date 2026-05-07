@@ -171,13 +171,22 @@ function normalizeMessageContent(content: string | AIMessageContent[]) {
 }
 
 export function buildOpenAICompatiblePayload(model: string, messages: ProxyChatMessage[]) {
-  return {
+  const payload: any = {
     model,
     messages: messages.map((message) => ({
       role: message.role,
       content: normalizeMessageContent(message.content),
     })),
   };
+
+  // Adaptive Thinking for Claude Opus 4.7
+  if (model === 'claude-opus-4-7') {
+    payload.thinking = { type: 'adaptive' };
+    // Default effort for high-intelligence tasks
+    payload.output_config = { effort: 'high' };
+  }
+
+  return payload;
 }
 
 export function buildGeminiPayload(messages: ProxyChatMessage[]) {

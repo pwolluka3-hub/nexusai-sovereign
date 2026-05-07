@@ -6,6 +6,7 @@ import {
   loadAgents,
   getAgentByRole,
   createOrchestrationPlan,
+  createStructuredOrchestrationPlan,
   executeAgentTask,
   selectBestOutput,
   combineOutputs,
@@ -34,7 +35,7 @@ import {
 import { loadBrandKit } from './memoryService';
 import { buildMemoryContext } from './agentMemoryService';
 import { universalChat } from './aiService';
-import { parseCriticVerdict } from './orchestrationPrimitives';
+import { parseCriticVerdict, CRITIC_SCHEMA } from './orchestrationPrimitives';
 
 // Orchestration Types
 export interface OrchestrationResult {
@@ -145,15 +146,15 @@ export async function orchestrate(
     };
   }
   
-  // Create orchestration plan
-  const plan = await createOrchestrationPlan(userRequest, options.requestType);
-  plan.status = 'executing';
-  
   // AI provider function
-  const aiProvider = async (prompt: string): Promise<string> => {
+  const aiProvider = async (prompt: string, options: any = {}): Promise<string> => {
     const model = options.preferredModel || 'gpt-4o';
-    return await universalChat(prompt, { model, brandKit });
+    return await universalChat(prompt, { ...options, model, brandKit });
   };
+  
+  // Create orchestration plan
+  const plan = await createStructuredOrchestrationPlan(userRequest, options.requestType, aiProvider);
+  plan.status = 'executing';
   
   // Execute orchestration with potential regeneration
   let finalResult: OrchestrationResult | null = null;
@@ -298,7 +299,7 @@ export async function orchestrate(
 async function executeOrchestrationPlan(
   plan: OrchestrationPlan,
   context: Record<string, string>,
-  aiProvider: (prompt: string) => Promise<string>
+  aiProvider: (prompt: string, options?: any) => Promise<string>
 ): Promise<{
   outputs: AgentOutput[];
   combinedContent: string;
@@ -365,7 +366,8 @@ async function executeOrchestrationPlan(
         assignedAgent,
         task.input || plan.userRequest,
         taskContext,
-        aiProvider
+        aiProvider,
+        assignedAgent.role === 'critic' ? CRITIC_SCHEMA : undefined
       );
       
       task.output = output;

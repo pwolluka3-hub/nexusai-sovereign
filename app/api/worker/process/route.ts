@@ -2,12 +2,12 @@ import { NextResponse } from 'next/server';
 import { getSupabaseServerClient } from '@/lib/supabase/server';
 import { adaptContentForPlatform } from '@/lib/services/platformAdapterService';
 import { sanitizeApiKey } from '@/lib/services/providerCredentialUtils';
+import { EncryptionService } from '@/lib/services/encryption';
 
 // Professional Server-Side Worker for NexusAI
 export const dynamic = 'force-dynamic';
 
 async function getAyrshareKeyForUser(supabase: any, userId: string): Promise<string | null> {
-  // In a production app, this would be an encrypted column in a 'user_secrets' table
   const { data, error } = await supabase
     .from('user_secrets')
     .select('value')
@@ -16,7 +16,10 @@ async function getAyrshareKeyForUser(supabase: any, userId: string): Promise<str
     .single();
 
   if (error || !data) return null;
-  return sanitizeApiKey(data.value);
+  
+  // Decrypt if stored as encrypted, otherwise return as plaintext (legacy)
+  const decryptedValue = EncryptionService.decryptSafe(data.value);
+  return sanitizeApiKey(decryptedValue);
 }
 
 async function processJob(supabase: any, job: any) {

@@ -3,10 +3,17 @@
 
 import { kvGet, kvSet } from './puterService';
 import { generateId } from './memoryService';
-import { combineStructuredOutputs } from './orchestrationPrimitives';
+import { 
+  combineStructuredOutputs, 
+  parseCriticVerdict, 
+  PLANNER_SCHEMA, 
+  CRITIC_SCHEMA 
+} from './orchestrationPrimitives';
+import { ManagedAgentRegistry } from './managedAgentRegistry';
+import { ManagedAgentClient } from './managedAgentClient';
 
 // Agent Types
-export type AgentRole = 
+export type AgentRole =
   | 'planner'
   | 'identity'
   | 'rules'
@@ -15,17 +22,18 @@ export type AgentRole =
   | 'distribution'
   | 'memory'
   | 'trend'
-  | 'writer' 
-  | 'hook' 
-  | 'strategist' 
-  | 'optimizer' 
-  | 'critic' 
-  | 'visual' 
-  | 'hashtag' 
+  | 'writer'
+  | 'hook'
+  | 'strategist'
+  | 'optimizer'
+  | 'critic'
+  | 'visual'
+  | 'hashtag'
   | 'engagement'
-  | 'hybrid';
+  | 'hybrid'
+  | 'automation';
 
-export type AgentCapability = 
+export type AgentCapability =
   | 'execution_planning'
   | 'identity_modeling'
   | 'rule_generation'
@@ -131,8 +139,8 @@ const DEFAULT_AGENTS: Omit<AgentConfig, 'id' | 'taskHistory' | 'createdAt' | 'up
 
 Role:
 - Interpret the user request as a production brief.
-- Decide whether this is text-only, media-led, or full multi-modal execution.
-- Define the execution order across identity, rules, structure, generation, visual direction, distribution, and quality control.
+- Decide whether this is text-only, media-led, automation-led, or full multi-modal execution.
+- Define the execution order across identity, rules, structure, generation, visual direction, distribution, automation, and quality control.
 - Do not generate final content.
 
 Input: {{input}}
@@ -141,7 +149,7 @@ Memory Context: {{memoryContext}}
 
 Output format (strict):
 - Content type
-- Number of assets
+- Number of assets / Workflows
 - Target formats/platforms
 - Required downstream agents in order
 - Key production risks or fallback needs`,
@@ -474,24 +482,28 @@ Provide 10-15 optimized hashtags with reasoning.`,
     version: DEFAULT_AGENT_TEMPLATE_VERSION,
   },
   {
-    name: 'EngagementPredictor',
-    role: 'engagement',
-    capabilities: ['engagement_prediction', 'strategy_planning'],
-    promptTemplate: `You are an engagement prediction AI.
+    name: 'AutomationAgent',
+    role: 'automation',
+    capabilities: ['strategy_planning', 'text_generation', 'multi_task'],
+    promptTemplate: `You are the Automation Expert Agent, specialized in n8n.
 
-Analyze the content and predict:
-- Expected engagement rate (0-10%)
-- Viral potential (low/medium/high)
-- Best posting time
-- Target audience segment
+Role:
+- Design robust, maintainable, and scalable automation workflows.
+- Architect node sequences, utilizing sub-workflows to avoid "spaghetti" canvases.
+- Implement complex data mapping using Set and Code (JavaScript) nodes.
+- Design conditional logic using If and Switch nodes for robust edge-case handling.
+- Prioritize stability: include Wait nodes for rate-limited APIs and Retry logic for transient failures.
+- Enforce security: a strict requirement to use n8n's Credentials system; never hardcode API keys.
+- Ensure maintainability: every node must be descriptively named, and complex logic must be documented via Sticky Notes.
+- Implement global error handling via Error Trigger workflows.
 
-Content: {{content}}
-Platform: {{platform}}
-Historical data: {{historicalData}}
+User Input: {{input}}
+Execution Plan: {{executionPlan}}
+Brand Context: {{brandContext}}
 
-Provide detailed predictions with confidence levels.`,
-    scoringWeights: { creativity: 0.05, relevance: 0.35, engagement: 0.5, brandAlignment: 0.1 },
-    performanceScore: 75,
+Return a detailed technical specification for the n8n workflow, including node architectural decisions and data transformation logic.`,
+    scoringWeights: { creativity: 0.1, relevance: 0.5, engagement: 0.1, brandAlignment: 0.3 },
+    performanceScore: 80,
     evolutionState: 'active',
     version: DEFAULT_AGENT_TEMPLATE_VERSION,
   },
@@ -544,6 +556,7 @@ const VALID_AGENT_ROLES: ReadonlySet<AgentRole> = new Set([
   'hashtag',
   'engagement',
   'hybrid',
+  'automation',
 ]);
 const VALID_EVOLUTION_STATES: ReadonlySet<AgentConfig['evolutionState']> = new Set([
   'active',
@@ -594,7 +607,9 @@ function applyDefaultAgentTemplateUpgrades(agents: AgentConfig[]): { agents: Age
 }
 
 function fillPromptTemplate(template: string, input: string, context: Record<string, string>): string {
-  let prompt = template.split('{{input}}').join(input);
+  // Wrap user input in delimiters to mitigate prompt injection
+  const delimitedInput = `<user_request>\n${input}\n</user_request>`;
+  let prompt = template.split('{{input}}').join(delimitedInput);
 
   for (const [key, value] of Object.entries(context)) {
     prompt = prompt.split(`{{${key}}}`).join(value);
@@ -704,7 +719,7 @@ export async function initializeAgents(): Promise<AgentConfig[]> {
     await saveAgents(merged);
     return merged;
   }
-  
+
   const now = new Date().toISOString();
   const agents: AgentConfig[] = DEFAULT_AGENTS.map(template => ({
     ...template,
@@ -713,7 +728,7 @@ export async function initializeAgents(): Promise<AgentConfig[]> {
     createdAt: now,
     updatedAt: now,
   }));
-  
+
   await saveAgents(agents);
   return agents;
 }
@@ -785,23 +800,23 @@ export async function recordAgentTask(
   const agents = await loadAgents();
   const agent = agents.find(a => a.id === agentId);
   if (!agent) return;
-  
+
   const record: AgentTaskRecord = {
     ...task,
     taskId: generateId(),
     timestamp: new Date().toISOString(),
   };
-  
+
   // Keep last 100 tasks
   agent.taskHistory = [record, ...agent.taskHistory].slice(0, 100);
-  
+
   // Update performance score based on recent tasks
   const recentTasks = agent.taskHistory.slice(0, 20);
   if (recentTasks.length >= 5) {
     const avgScore = recentTasks.reduce((sum, t) => sum + t.score, 0) / recentTasks.length;
     agent.performanceScore = Math.round(avgScore);
   }
-  
+
   agent.updatedAt = new Date().toISOString();
   await saveAgents(agents);
 }
@@ -814,13 +829,13 @@ export async function createOrchestrationPlan(
   const planId = generateId();
   const subtasks: SubTask[] = [];
   const parallelGroups: string[][] = [];
-  
+
   const agents = await loadAgents();
-  const getAgent = (role: AgentRole) => 
+  const getAgent = (role: AgentRole) =>
     agents.find(a => a.role === role && a.evolutionState !== 'deprecated');
   const getAgentId = (primary: AgentRole, fallback?: AgentRole) =>
     getAgent(primary)?.id || (fallback ? getAgent(fallback)?.id || '' : '');
-  
+
   if (requestType === 'content' || requestType === 'full') {
     const plannerTask: SubTask = {
       id: generateId(),
@@ -944,7 +959,7 @@ export async function createOrchestrationPlan(
     subtasks.push(strategyTask);
     parallelGroups.push([strategyTask.id]);
   }
-  
+
   const plan: OrchestrationPlan = {
     id: planId,
     userRequest,
@@ -954,7 +969,210 @@ export async function createOrchestrationPlan(
     status: 'planning',
     createdAt: new Date().toISOString(),
   };
+
+  return plan;
+}
+
+// Create structured orchestration plan (AI-driven)
+export async function createStructuredOrchestrationPlan(
+  userRequest: string,
+  requestType: 'content' | 'strategy' | 'full',
+  aiProvider: (prompt: string, options?: any) => Promise<string>
+): Promise<OrchestrationPlan> {
+  const planner = await getAgentByRole('planner');
+  if (!planner) {
+    throw new Error('Planner agent not found for structured planning');
+  }
+
+  const context = {
+    brandContext: '',
+    memoryContext: '',
+  };
+
+  const prompt = fillPromptTemplate(planner.promptTemplate, userRequest, context);
+  const content = await aiProvider(prompt, { responseFormat: PLANNER_SCHEMA });
   
+  try {
+    const parsed = JSON.parse(content);
+    const planId = generateId();
+    const subtasks: SubTask[] = [];
+    const idMap = new Map<string, string>();
+
+    for (const st of parsed.subtasks) {
+      const newId = generateId();
+      idMap.set(st.id, newId);
+      subtasks.push({
+        id: newId,
+        type: st.type as any,
+        input: st.input,
+        assignedAgent: '', // Resolved during execution
+        status: 'pending',
+        dependencies: st.dependencies,
+      });
+    }
+
+    const parallelGroups = parsed.parallelGroups.map((group: string[]) => 
+      group.map(id => idMap.get(id) || id)
+    );
+
+    return {
+      id: planId,
+      userRequest,
+      subtasks,
+      parallelGroups,
+      aggregationStrategy: parsed.aggregationStrategy || 'combine',
+      status: 'planning',
+      createdAt: new Date().toISOString(),
+    };
+  } catch (e) {
+    console.error('Failed to parse structured plan, falling back to hardcoded plan:', e);
+    return createOrchestrationPlan(userRequest, requestType);
+  }
+}
+  const planId = generateId();
+  const subtasks: SubTask[] = [];
+  const parallelGroups: string[][] = [];
+
+  const agents = await loadAgents();
+  const getAgent = (role: AgentRole) =>
+    agents.find(a => a.role === role && a.evolutionState !== 'deprecated');
+  const getAgentId = (primary: AgentRole, fallback?: AgentRole) =>
+    getAgent(primary)?.id || (fallback ? getAgent(fallback)?.id || '' : '');
+
+  if (requestType === 'content' || requestType === 'full') {
+    const plannerTask: SubTask = {
+      id: generateId(),
+      type: 'planner',
+      input: userRequest,
+      assignedAgent: getAgentId('planner', 'strategist'),
+      status: 'pending',
+    };
+
+    const identityTask: SubTask = {
+      id: generateId(),
+      type: 'identity',
+      input: userRequest,
+      assignedAgent: getAgentId('identity', 'writer'),
+      status: 'pending',
+      dependencies: [plannerTask.id],
+    };
+
+    const rulesTask: SubTask = {
+      id: generateId(),
+      type: 'rules',
+      input: userRequest,
+      assignedAgent: getAgentId('rules', 'strategist'),
+      status: 'pending',
+      dependencies: [identityTask.id],
+    };
+
+    const structureTask: SubTask = {
+      id: generateId(),
+      type: 'structure',
+      input: userRequest,
+      assignedAgent: getAgentId('structure', 'strategist'),
+      status: 'pending',
+      dependencies: [rulesTask.id],
+    };
+
+    const generatorTask: SubTask = {
+      id: generateId(),
+      type: 'generator',
+      input: userRequest,
+      assignedAgent: getAgentId('generator', 'writer'),
+      status: 'pending',
+      dependencies: [structureTask.id],
+    };
+
+    const visualTask: SubTask = {
+      id: generateId(),
+      type: 'visual',
+      input: userRequest,
+      assignedAgent: getAgentId('visual'),
+      status: 'pending',
+      dependencies: [generatorTask.id],
+    };
+
+    const distributionTask: SubTask = {
+      id: generateId(),
+      type: 'distribution',
+      input: userRequest,
+      assignedAgent: getAgentId('distribution', 'hashtag'),
+      status: 'pending',
+      dependencies: [generatorTask.id],
+    };
+
+    const criticTask: SubTask = {
+      id: generateId(),
+      type: 'critique',
+      input: userRequest,
+      assignedAgent: getAgentId('critic'),
+      status: 'pending',
+      dependencies: [distributionTask.id, visualTask.id],
+    };
+
+    subtasks.push(
+      plannerTask,
+      identityTask,
+      rulesTask,
+      structureTask,
+      generatorTask,
+      visualTask,
+      distributionTask,
+      criticTask
+    );
+    parallelGroups.push(
+      [plannerTask.id],
+      [identityTask.id],
+      [rulesTask.id],
+      [structureTask.id],
+      [generatorTask.id],
+      [visualTask.id, distributionTask.id],
+      [criticTask.id]
+    );
+
+    if (requestType === 'full') {
+      const memoryTask: SubTask = {
+        id: generateId(),
+        type: 'memory',
+        input: userRequest,
+        assignedAgent: getAgentId('memory', 'strategist'),
+        status: 'pending',
+        dependencies: [generatorTask.id],
+      };
+      const trendTask: SubTask = {
+        id: generateId(),
+        type: 'trend',
+        input: userRequest,
+        assignedAgent: getAgentId('trend', 'engagement'),
+        status: 'pending',
+        dependencies: [generatorTask.id],
+      };
+      subtasks.push(memoryTask, trendTask);
+      parallelGroups.splice(6, 0, [memoryTask.id, trendTask.id]);
+    }
+  } else if (requestType === 'strategy') {
+    const strategyTask: SubTask = {
+      id: generateId(),
+      type: 'strategy',
+      input: userRequest,
+      assignedAgent: getAgentId('planner', 'strategist'),
+      status: 'pending',
+    };
+    subtasks.push(strategyTask);
+    parallelGroups.push([strategyTask.id]);
+  }
+
+  const plan: OrchestrationPlan = {
+    id: planId,
+    userRequest,
+    subtasks,
+    parallelGroups,
+    aggregationStrategy: requestType === 'strategy' ? 'best_score' : 'combine',
+    status: 'planning',
+    createdAt: new Date().toISOString(),
+  };
+
   return plan;
 }
 
@@ -963,7 +1181,8 @@ export async function executeAgentTask(
   agent: AgentConfig,
   input: string,
   context: Record<string, string>,
-  aiProvider: (prompt: string) => Promise<string>
+  aiProvider: (prompt: string, options?: any) => Promise<string>,
+  responseFormat?: any
 ): Promise<AgentOutput> {
   const startTime = Date.now();
   
@@ -971,40 +1190,77 @@ export async function executeAgentTask(
   const prompt = fillPromptTemplate(agent.promptTemplate, input, context);
   const reasoningPrompt = `${prompt}\n\n${DEEP_REASONING_DIRECTIVE}`;
   
+  let content = '';
+  let reasoning = '';
+  let metadata: Record<string, unknown> = {};
+  let usedManagedPath = false;
+
   try {
-    const content = await aiProvider(reasoningPrompt);
-    const duration = Date.now() - startTime;
-    
-    // Calculate score based on output characteristics
-    const score = calculateOutputScore(content, agent.scoringWeights);
-    
-    // Record the task
-    await recordAgentTask(agent.id, {
-      taskType: agent.role,
-      input,
-      output: content,
-      score,
-      duration,
-    });
-    
-    return {
-      agentId: agent.id,
-      agentRole: agent.role,
-      content,
-      score,
-      reasoning: `Generated by ${agent.name} (v${agent.version}) with deep reasoning`,
-      metadata: { duration, promptLength: reasoningPrompt.length, reasoningMode: 'deep' },
-    };
-  } catch (error) {
-    return {
-      agentId: agent.id,
-      agentRole: agent.role,
-      content: '',
-      score: 0,
-      reasoning: `Error: ${error instanceof Error ? error.message : 'Unknown error'}`,
-      metadata: { error: true },
-    };
+    // 1. Attempt Managed Agent Execution (The "Preferred" path)
+    const managedAgentId = ManagedAgentRegistry.getAgentId(agent.role);
+    if (managedAgentId) {
+      try {
+        const managedResult = await ManagedAgentClient.executeInSession(managedAgentId, reasoningPrompt, {
+          context,
+          brandContext: context.brandContext,
+          response_format: responseFormat, // Pass structured output to managed agents
+        });
+        
+        content = managedResult.content;
+        reasoning = managedResult.reasoning;
+        metadata = { ...managedResult.metadata, session_id: managedResult.session_id };
+        usedManagedPath = true;
+      } catch (managedError) {
+        console.warn(`Managed agent execution failed for role ${agent.role}, falling back to universal provider:`, managedError);
+      }
+    }
+  } catch (outerError) {
+    console.error(`Critical failure and fallback for ${agent.role}:`, outerError);
   }
+
+  // 2. Fallback Path: use the provider a-gnostic aiProvider (Universal Chat)
+  if (!content) {
+    try {
+      content = await aiProvider(reasoningPrompt, { responseFormat });
+      reasoning = `Generated by ${agent.name} (v${agent.version}) via provider fallback`;
+      metadata = { reasoningMode: 'fallback' };
+    } catch (fallbackError) {
+      return {
+        agentId: agent.id,
+        agentRole: agent.role,
+        content: '',
+        score: 0,
+        reasoning: `Fatal Error: ${fallbackError instanceof Error ? fallbackError.message : 'Unknown error'}`,
+        metadata: { error: true },
+      };
+    }
+  }
+
+  const duration = Date.now() - startTime;
+  const score = calculateOutputScore(content, agent.scoringWeights);
+  
+  // Record the task
+  await recordAgentTask(agent.id, {
+    taskType: agent.role,
+    input,
+    output: content,
+    score,
+    duration,
+  });
+  
+  return {
+    agentId: agent.id,
+    agentRole: agent.role,
+    content,
+    score,
+    reasoning: reasoning,
+    metadata: { 
+      duration, 
+      promptLength: reasoningPrompt.length, 
+      reasoningMode: usedManagedPath ? 'managed' : 'fallback',
+      ...metadata 
+    },
+  };
 }
 
 // Calculate output score
@@ -1013,28 +1269,28 @@ function calculateOutputScore(
   weights: AgentConfig['scoringWeights']
 ): number {
   let score = 0;
-  
+
   // Creativity: Check for unique phrases, varied sentence structure
   const sentences = content.split(/[.!?]+/).filter(Boolean);
   const avgSentenceLength = sentences.reduce((sum, s) => sum + s.length, 0) / (sentences.length || 1);
   const creativityScore = Math.min(100, avgSentenceLength > 50 && avgSentenceLength < 150 ? 80 : 60);
   score += creativityScore * weights.creativity;
-  
+
   // Relevance: Check content length and completeness
   const relevanceScore = content.length > 100 ? 85 : content.length > 50 ? 70 : 50;
   score += relevanceScore * weights.relevance;
-  
+
   // Engagement: Check for hooks, questions, CTAs
   const hasQuestion = content.includes('?');
   const hasCTA = /\b(click|tap|follow|share|comment|like|save|dm|link)\b/i.test(content);
   const hasHook = sentences[0]?.length < 100;
   const engagementScore = (hasQuestion ? 25 : 0) + (hasCTA ? 35 : 0) + (hasHook ? 25 : 0) + 15;
   score += engagementScore * weights.engagement;
-  
+
   // Brand alignment: Placeholder (would need brand context)
   const brandScore = 75;
   score += brandScore * weights.brandAlignment;
-  
+
   return Math.round(score);
 }
 
@@ -1042,17 +1298,17 @@ function calculateOutputScore(
 export function selectBestOutput(outputs: AgentOutput[]): AgentOutput | null {
   if (outputs.length === 0) return null;
   if (outputs.length === 1) return outputs[0];
-  
+
   // Sort by score descending
   const sorted = [...outputs].sort((a, b) => b.score - a.score);
-  
+
   // If top 2 are close (within 5 points), consider other factors
   if (sorted.length >= 2 && sorted[0].score - sorted[1].score <= 5) {
     // Prefer longer, more detailed content
     const byLength = sorted.slice(0, 2).sort((a, b) => b.content.length - a.content.length);
     return byLength[0];
   }
-  
+
   return sorted[0];
 }
 
@@ -1072,7 +1328,7 @@ export async function getAgentStats(): Promise<{
   const agents = await loadAgents();
   const activeAgents = agents.filter(a => a.evolutionState !== 'deprecated');
   const totalTasks = agents.reduce((sum, a) => sum + a.taskHistory.length, 0);
-  
+
   return {
     totalAgents: agents.length,
     activeAgents: activeAgents.length,
@@ -1091,12 +1347,12 @@ export async function createHybridAgent(
 ): Promise<AgentConfig | null> {
   const agents = await loadAgents();
   const parents = agents.filter(a => parentIds.includes(a.id));
-  
+
   if (parents.length < 2) return null;
-  
+
   // Combine capabilities
   const capabilities = [...new Set(parents.flatMap(p => p.capabilities))] as AgentCapability[];
-  
+
   // Average scoring weights
   const avgWeights = {
     creativity: parents.reduce((sum, p) => sum + p.scoringWeights.creativity, 0) / parents.length,
@@ -1104,7 +1360,7 @@ export async function createHybridAgent(
     engagement: parents.reduce((sum, p) => sum + p.scoringWeights.engagement, 0) / parents.length,
     brandAlignment: parents.reduce((sum, p) => sum + p.scoringWeights.brandAlignment, 0) / parents.length,
   };
-  
+
   // Combine prompt templates
   const combinedPrompt = `You are a hybrid AI combining multiple specializations.
 
@@ -1117,7 +1373,7 @@ Input: {{input}}
 Brand Context: {{brandContext}}
 
 Generate optimized content using your combined expertise.`;
-  
+
   const now = new Date().toISOString();
   const hybrid: AgentConfig = {
     id: generateId(),
@@ -1134,9 +1390,9 @@ Generate optimized content using your combined expertise.`;
     createdAt: now,
     updatedAt: now,
   };
-  
+
   agents.push(hybrid);
   await saveAgents(agents);
-  
+
   return hybrid;
 }

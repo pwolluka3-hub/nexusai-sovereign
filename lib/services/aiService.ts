@@ -17,6 +17,7 @@ import {
 // Available models - including custom provider options
 export const AVAILABLE_MODELS: AIModel[] = [
   // Puter native models (free)
+  { provider: 'puter', model: 'claude-opus-4-7', name: 'Claude Opus 4.7', contextWindow: 1000000, supportsVision: true },
   { provider: 'puter', model: 'gpt-4o', name: 'GPT-4o', contextWindow: 128000, supportsVision: true },
   { provider: 'puter', model: 'gpt-4o-mini', name: 'GPT-4o Mini', contextWindow: 128000, supportsVision: true },
   { provider: 'puter', model: 'claude-sonnet-4-5', name: 'Claude Sonnet', contextWindow: 200000, supportsVision: true },
@@ -37,10 +38,10 @@ export const AVAILABLE_MODELS: AIModel[] = [
 ];
 
 // Default model priority chain
-const MODEL_PRIORITY = ['gpt-4o', 'claude-sonnet-4-5', 'gpt-4o-mini'];
+const MODEL_PRIORITY = ['claude-opus-4-7', 'gpt-4o', 'claude-sonnet-4-5', 'gpt-4o-mini'];
 
 const PROVIDER_DEFAULT_MODELS = {
-  puter: ['gpt-4o', 'claude-sonnet-4-5', 'gpt-4o-mini'],
+  puter: ['claude-opus-4-7', 'gpt-4o', 'claude-sonnet-4-5', 'gpt-4o-mini'],
   openrouter: ['openrouter/auto'],
   githubmodels: ['openai/gpt-4o'],
   poe: ['Claude-Sonnet-4.6'],
@@ -190,7 +191,8 @@ function normalizeChatMessages(messages: AIMessage[]): Array<{ role: string; con
 async function callServerChatProxy(
   provider: ServerProxyProvider,
   messages: AIMessage[],
-  model: string
+  model: string,
+  responseFormat?: { type: string; schema?: any }
 ): Promise<string> {
   if (typeof window === 'undefined') {
     throw new ServerProxyError(0, 'Server proxy can only be called from the browser.');
@@ -203,6 +205,7 @@ async function callServerChatProxy(
       provider,
       model,
       messages: normalizeChatMessages(messages),
+      response_format: responseFormat,
     }),
   });
   const data = await response.json().catch(() => ({})) as { text?: string; error?: string };
@@ -305,7 +308,8 @@ async function callOpenAICompatibleChat(
   apiKey: string | null,
   messages: AIMessage[],
   model: string,
-  extraHeaders?: Record<string, string>
+  extraHeaders?: Record<string, string>,
+  responseFormat?: { type: string }
 ): Promise<string> {
   let serverProxyError: unknown = null;
 
@@ -336,6 +340,7 @@ async function callOpenAICompatibleChat(
     body: JSON.stringify({
       model,
       messages: normalizeChatMessages(messages),
+      response_format: responseFormat,
     }),
   });
 
@@ -434,12 +439,13 @@ export async function chatWithPuter(
     brandKit?: BrandKit | null;
     stream?: boolean;
     memoryContext?: string;
+    responseFormat?: { type: string; schema?: any };
   } = {}
 ): Promise<string> {
   const options = typeof optionsOrModel === 'string'
     ? { model: optionsOrModel }
     : optionsOrModel;
-  const { model = 'gpt-4o', brandKit = null, stream = false, memoryContext } = options;
+  const { model = 'gpt-4o', brandKit = null, stream = false, memoryContext, responseFormat } = options;
 
   const ready = await waitForPuter();
   if (typeof window === 'undefined' || !ready || !window.puter) {
@@ -471,10 +477,9 @@ export async function chatWithPuter(
 
   return withRetry(async () => {
     if (stream) {
-      // Streaming response
+      // ... (streaming remains same)
       const response = await window.puter.ai.chat(messageArray, { model, stream: true });
       
-      // BUG FIX #4: Add proper error handling for streaming
       if (!response) {
         throw new Error(`[streamChatFromPuter] Empty response from model ${model}`);
       }
@@ -512,7 +517,6 @@ export async function chatWithPuter(
           throw new Error(`[streamChatFromPuter] Stream failed before any content: ${streamError}`);
         }
         console.warn(`[streamChatFromPuter] Stream interrupted after ${chunkCount} chunks and ${fullText.length} chars:`, streamError);
-        // Return partial content if we got something
       }
       
       if (fullText.length === 0) {
@@ -522,8 +526,10 @@ export async function chatWithPuter(
       return fullText;
     } else {
       // Non-streaming response
-      // BUG FIX #2: Add runtime validation for response structure
-      const response = await window.puter.ai.chat(messageArray, { model });
+      const response = await window.puter.ai.chat(messageArray, { 
+        model, 
+        response_format: responseFormat // Pass structured output to Puter
+      });
       
       if (!response || typeof response !== 'object') {
         throw new Error(`[chatWithPuter] Invalid response type from model ${model}: expected object, got ${typeof response}`);
@@ -859,9 +865,10 @@ export async function universalChat(
     brandKit?: BrandKit | null;
     stream?: boolean;
     avoidPuter?: boolean;
+    responseFormat?: { type: string; schema?: any };
   } = {}
 ): Promise<string> {
-  const { model = 'gpt-4o', avoidPuter = false } = options;
+  const { model = 'gpt-4o', avoidPuter = false, responseFormat } = options;
   const configuredProviders = await getConfiguredProviders();
   const allowedProviders = avoidPuter
     ? configuredProviders.filter((provider) => provider !== 'puter')
@@ -913,7 +920,7 @@ export async function universalChat(
       switch (provider) {
         case 'gemini':
           {
-            const content = await chatWithGemini(messages, options);
+            const content = await chatWithGemini(messages, { ...options, responseFormat });
             if (provider !== preferredProvider) {
               dispatchProviderEvent({
                 type: 'provider_switched',
@@ -927,7 +934,7 @@ export async function universalChat(
           }
         case 'groq':
           {
-            const content = await chatWithGroq(messages, { ...options, model: candidateModel });
+            const content = await chatWithGroq(messages, { ...options, model: candidateModel, responseFormat });
             if (provider !== preferredProvider) {
               dispatchProviderEvent({
                 type: 'provider_switched',
@@ -941,7 +948,7 @@ export async function universalChat(
           }
         case 'openrouter':
           {
-            const content = await chatWithOpenRouter(messages, { ...options, model: candidateModel });
+            const content = await chatWithOpenRouter(messages, { ...options, model: candidateModel, responseFormat });
             if (provider !== preferredProvider) {
               dispatchProviderEvent({
                 type: 'provider_switched',
@@ -955,7 +962,7 @@ export async function universalChat(
           }
         case 'githubmodels':
           {
-            const content = await chatWithGitHubModels(messages, { ...options, model: candidateModel });
+            const content = await chatWithGitHubModels(messages, { ...options, model: candidateModel, responseFormat });
             if (provider !== preferredProvider) {
               dispatchProviderEvent({
                 type: 'provider_switched',
@@ -969,7 +976,7 @@ export async function universalChat(
           }
         case 'bytez':
           {
-            const content = await chatWithBytez(messages, { ...options, model: candidateModel });
+            const content = await chatWithBytez(messages, { ...options, model: candidateModel, responseFormat });
             if (provider !== preferredProvider) {
               dispatchProviderEvent({
                 type: 'provider_switched',
@@ -983,7 +990,7 @@ export async function universalChat(
           }
         case 'poe':
           {
-            const content = await chatWithPoe(messages, { ...options, model: candidateModel });
+            const content = await chatWithPoe(messages, { ...options, model: candidateModel, responseFormat });
             if (provider !== preferredProvider) {
               dispatchProviderEvent({
                 type: 'provider_switched',
@@ -997,7 +1004,7 @@ export async function universalChat(
           }
         case 'nvidia':
           {
-            const content = await chatWithNvidia(messages, { ...options, model: candidateModel });
+            const content = await chatWithNvidia(messages, { ...options, model: candidateModel, responseFormat });
             if (provider !== preferredProvider) {
               dispatchProviderEvent({
                 type: 'provider_switched',
@@ -1011,7 +1018,7 @@ export async function universalChat(
           }
         case 'together':
           {
-            const content = await chatWithTogether(messages, { ...options, model: candidateModel });
+            const content = await chatWithTogether(messages, { ...options, model: candidateModel, responseFormat });
             if (provider !== preferredProvider) {
               dispatchProviderEvent({
                 type: 'provider_switched',
@@ -1025,7 +1032,7 @@ export async function universalChat(
           }
         case 'fireworks':
           {
-            const content = await chatWithFireworks(messages, { ...options, model: candidateModel });
+            const content = await chatWithFireworks(messages, { ...options, model: candidateModel, responseFormat });
             if (provider !== preferredProvider) {
               dispatchProviderEvent({
                 type: 'provider_switched',
@@ -1039,7 +1046,7 @@ export async function universalChat(
           }
         case 'ollama':
           {
-            const content = await chatWithOllama(messages, { ...options, model: candidateModel });
+            const content = await chatWithOllama(messages, { ...options, model: candidateModel, responseFormat });
             if (provider !== preferredProvider) {
               dispatchProviderEvent({
                 type: 'provider_switched',
@@ -1053,7 +1060,7 @@ export async function universalChat(
           }
         case 'deepseek':
           {
-            const content = await chatWithDeepSeek(messages, { ...options, model: candidateModel });
+            const content = await chatWithDeepSeek(messages, { ...options, model: candidateModel, responseFormat });
             if (provider !== preferredProvider) {
               dispatchProviderEvent({
                 type: 'provider_switched',
@@ -1067,7 +1074,7 @@ export async function universalChat(
           }
         default:
           {
-            const content = await chatWithPuter(messages, { ...options, model: candidateModel });
+            const content = await chatWithPuter(messages, { ...options, model: candidateModel, responseFormat });
             if (provider !== preferredProvider) {
               dispatchProviderEvent({
                 type: 'provider_switched',
